@@ -79,6 +79,8 @@ class WinUWPH264DecoderImpl : public VideoDecoder {
   void UpdateVideoFrameDimensions(const EncodedImage& input_image);
 
  private:
+  ComPtr<IMFTransform> m_spDecoder;
+
   uint32_t width_;
   uint32_t height_;
   rtc::CriticalSection crit_;

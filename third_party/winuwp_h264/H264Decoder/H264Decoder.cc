@@ -51,8 +51,86 @@ WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl() {
 int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   int number_of_cores) {
   RTC_LOG(LS_INFO) << "WinUWPH264DecoderImpl::InitDecode()\n";
-  // Nothing to do here, decoder acts as a passthrough
-  return WEBRTC_VIDEO_CODEC_OK;
+  
+  // TODO: may need to do Windows::Foundation::Initialize or CoInitializeEx first
+  // TODO: assuming this is called only at begin streaming since it's probably expensive.
+
+  HRESULT hr = CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr, CLSCTX_INPROC_SERVER,
+      IID_IUnknown, (void**)&m_spDecoder);
+  if (FAILED(hr))
+	  // TODO: log hr
+    return WEBRTC_VIDEO_CODEC_ERROR;
+
+  //**********************************************************************
+  // Create input media type
+  //**********************************************************************
+  ULONG frameRateNumerator = 30; /* inst->maxFramerate ? */
+  ULONG frameRateDenominator = 1;
+  ULONG imageWidth = inst->width;
+  ULONG imageHeight = inst->height;
+
+  // TODO: these "SUCCEEDED" macros will all fall through if failure. Ensure this is expected paradigm.
+  ComPtr<IMFMediaType> spInputMedia;
+  hr = MFCreateMediaType(&spInputMedia);
+  if (SUCCEEDED(hr))
+    hr = spInputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+  if (SUCCEEDED(hr))
+    hr = spInputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+  if (SUCCEEDED(hr))
+    hr = MFSetAttributeRatio(spInputMedia.Get(), MF_MT_FRAME_RATE, frameRateNumerator,
+                             frameRateDenominator);
+  if (SUCCEEDED(hr))
+    hr = MFSetAttributeSize(spInputMedia.Get(), MF_MT_FRAME_SIZE, imageWidth,
+                            imageHeight);
+  if (SUCCEEDED(hr))
+    hr = MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+
+  //**********************************************************************
+  // Create output media type
+  //**********************************************************************
+  ComPtr<IMFMediaType> spOutputMedia;
+  if (SUCCEEDED(hr))
+    hr = MFCreateMediaType(&spOutputMedia);
+  if (SUCCEEDED(hr))
+    hr = spOutputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+  if (SUCCEEDED(hr))
+    hr = spOutputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_I420);
+  if (SUCCEEDED(hr))
+    hr = MFSetAttributeRatio(spOutputMedia.Get(), MF_MT_FRAME_RATE,
+                             frameRateNumerator, frameRateDenominator);
+  if (SUCCEEDED(hr))
+    hr = MFSetAttributeSize(spOutputMedia.Get(), MF_MT_FRAME_SIZE, imageWidth,
+                            imageHeight);
+
+  //**********************************************************************
+  // Assign media types to decoder
+  //**********************************************************************
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->SetInputType(0, spInputMedia.Get(), 0);
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->SetOutputType(0, spOutputMedia.Get(), 0);
+
+  DWORD status;
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->GetInputStatus(0, &status);
+
+  if (SUCCEEDED(hr)) {
+    if (MFT_INPUT_STATUS_ACCEPT_DATA != status)
+      return WEBRTC_VIDEO_CODEC_ERROR;  // H.264 decoder MFT is not accepting
+                                        // data
+  }
+
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL);
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL);
+  
+  if (SUCCEEDED(hr))
+    return WEBRTC_VIDEO_CODEC_OK;
+
+  return WEBRTC_VIDEO_CODEC_ERROR;
 }
 
 ComPtr<IMFSample> FromEncodedImage(const EncodedImage& input_image) {
