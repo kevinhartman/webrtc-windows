@@ -18,6 +18,7 @@
 #include <wrl.h>
 #include "../Utils/SampleAttributeQueue.h"
 #include "api/video_codecs/video_decoder.h"
+#include "common_video/include/i420_buffer_pool.h"
 #include "rtc_base/criticalsection.h"
 
 #pragma comment(lib, "mfreadwrite")
@@ -77,6 +78,8 @@ class WinUWPH264DecoderImpl : public VideoDecoder {
 
  private:
   void UpdateVideoFrameDimensions(const EncodedImage& input_image);
+  HRESULT FlushFrames(uint32_t timestamp, uint64_t ntp_time_ms);
+  HRESULT EnqueueFrame(const EncodedImage& input_image, bool missing_frames);
 
  private:
   ComPtr<IMFTransform> m_spDecoder;
