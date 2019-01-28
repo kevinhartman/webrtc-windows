@@ -51,12 +51,18 @@ WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl() {
 int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   int number_of_cores) {
   RTC_LOG(LS_INFO) << "WinUWPH264DecoderImpl::InitDecode()\n";
-  
+  RTC_LOG(LS_INFO) << "Kevin!\n";
+
   // TODO: may need to do Windows::Foundation::Initialize or CoInitializeEx first
   // TODO: assuming this is called only at begin streaming since it's probably expensive.
+  HRESULT hr = CoInitializeEx(0, COINIT_APARTMENTTHREADED); // TODO: uninitialize when finished
+  if (SUCCEEDED(hr))
+    hr = MFStartup(MF_VERSION, 0);
 
-  HRESULT hr = CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr, CLSCTX_INPROC_SERVER,
+  if (SUCCEEDED(hr))
+    hr = CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr, CLSCTX_INPROC_SERVER,
       IID_IUnknown, (void**)&m_spDecoder);
+
   if (FAILED(hr))
 	  // TODO: log hr
     return WEBRTC_VIDEO_CODEC_ERROR;
@@ -85,9 +91,34 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   if (SUCCEEDED(hr))
     hr = MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
+  // Register the input type with the decoder
+  if (SUCCEEDED(hr))
+    hr = m_spDecoder->SetInputType(0, spInputMedia.Get(), 0);
+
   //**********************************************************************
   // Create output media type
   //**********************************************************************
+
+  // TODO: here, we query the list of supported output formats after providing the input stream above
+  //       this is a temporary check. Remove this unless it's possible for h264 decoder impl to not support I420 on some devices.
+  int type = 0;
+  while (true) {
+    ComPtr<IMFMediaType> spMediaType;
+    hr = m_spDecoder->GetOutputAvailableType(0, type, &spMediaType);
+    if (hr == MF_E_NO_MORE_TYPES)
+      return E_FAIL;
+    GUID mediatype;
+    if (SUCCEEDED(hr)) {
+      hr = spMediaType->GetGUID(MF_MT_SUBTYPE, &mediatype);
+      if (SUCCEEDED(hr)) {
+        if (mediatype == MFVideoFormat_I420) {
+          break;
+        }
+      }
+    }
+    type++;
+  }
+
   ComPtr<IMFMediaType> spOutputMedia;
   if (SUCCEEDED(hr))
     hr = MFCreateMediaType(&spOutputMedia);
@@ -105,8 +136,6 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   //**********************************************************************
   // Assign media types to decoder
   //**********************************************************************
-  if (SUCCEEDED(hr))
-    hr = m_spDecoder->SetInputType(0, spInputMedia.Get(), 0);
   if (SUCCEEDED(hr))
     hr = m_spDecoder->SetOutputType(0, spOutputMedia.Get(), 0);
 
@@ -180,12 +209,90 @@ private:
   ComPtr<IMFSample> _sample;
 };
 
+int WinUWPH264DecoderImpl::FlushFrames() {
+
+  HRESULT hr;
+  DWORD outputStatus;
+
+  while (SUCCEEDED(hr = m_spDecoder->GetOutputStatus(&outputStatus)) &&
+         outputStatus == MFT_OUTPUT_STATUS_SAMPLE_READY)
+  {
+    //**********************************************************************
+    // Get needed size of our output buffer
+    //**********************************************************************
+    MFT_OUTPUT_STREAM_INFO strmInfo;
+    HRESULT hr = m_spDecoder->GetOutputStreamInfo(0, &strmInfo);
+    if (FAILED(hr))
+      return WEBRTC_VIDEO_CODEC_ERROR;
+    _ASSERT(!(strmInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES));
+    _ASSERT(!(strmInfo.dwFlags & MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES));
+
+    //**********************************************************************
+    // Create output sample
+    //**********************************************************************
+    // TODO: can we avoid allocating buffers by reusing those of the same size?
+    // Likely only if buffer lifetime ends after ProcessOutput returns.
+    ComPtr<IMFMediaBuffer> spOutBuffer;
+    hr = MFCreateMemoryBuffer(strmInfo.cbSize, &spOutBuffer);
+    if (FAILED(hr))
+      return WEBRTC_VIDEO_CODEC_ERROR;
+
+    ComPtr<IMFSample> spOutSample;
+    hr = MFCreateSample(&spOutSample);
+    if (FAILED(hr))
+      return WEBRTC_VIDEO_CODEC_ERROR;
+
+    hr = spOutSample->AddBuffer(spOutBuffer.Get());
+    if (FAILED(hr))
+      return WEBRTC_VIDEO_CODEC_ERROR;
+
+    //**********************************************************************
+    // Create output buffer
+    //**********************************************************************
+    MFT_OUTPUT_DATA_BUFFER outputDataBuffer;
+    outputDataBuffer.dwStatus = 0;
+    outputDataBuffer.dwStreamID = 0;
+    outputDataBuffer.pEvents = nullptr;
+    outputDataBuffer.pSample = spOutSample.Get();
+
+	// Invoke the Media Foundation decoder
+    DWORD status;
+    hr = m_spDecoder->ProcessOutput(0, 1, &outputDataBuffer, &status);
+
+	// TODO: if we need to detect stream format changes, read MF_E_TRANSFORM_STREAM_CHANGE here and adjust
+    if (status == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+	  // Ideally, this won't happen (since that'd mean we allocated buffers unnecessarily as per GetOutputStatus())
+	  // but there's nothing wrong (we're just out of data), so we return OK.
+      return WEBRTC_VIDEO_CODEC_OK;
+	}
+
+	// TODO: we need to unpack decoded frame and provide it to the webrtc callback
+  }
+
+  if (FAILED(hr))
+    return WEBRTC_VIDEO_CODEC_ERROR;
+}
+
 int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   bool missing_frames,
   const CodecSpecificInfo* codec_specific_info,
   int64_t render_time_ms) {
 
-  UpdateVideoFrameDimensions(input_image);
+  DWORD inputStatus;
+  HRESULT hr = m_spDecoder->GetInputStatus(0, &inputStatus);
+
+  if (FAILED(hr)) {
+    return WEBRTC_VIDEO_CODEC_ERROR;
+  }
+
+  if (inputStatus != MFT_INPUT_STATUS_ACCEPT_DATA) {
+	// Process output until the stream can accept the new frame.
+    int res = FlushFrames();
+    if (res != WEBRTC_VIDEO_CODEC_OK)
+      return res;
+  }
+
+  // TODO: replace below
   auto sample = FromEncodedImage(input_image);
 
   if (sample != nullptr) {
@@ -193,6 +300,8 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
       sample, width_, height_));
     VideoFrame decodedFrame(buffer, input_image.Timestamp(), render_time_ms, kVideoRotation_0);
     decodedFrame.set_ntp_time_ms(input_image.ntp_time_ms_);
+
+
 
     rtc::CritScope lock(&crit_);
 
@@ -211,6 +320,7 @@ int WinUWPH264DecoderImpl::RegisterDecodeCompleteCallback(
 }
 
 int WinUWPH264DecoderImpl::Release() {
+	// TODO: uninit com and media foundation stuff
   OutputDebugString(L"WinUWPH264DecoderImpl::Release()\n");
   return WEBRTC_VIDEO_CODEC_OK;
 }

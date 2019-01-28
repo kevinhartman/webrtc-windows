@@ -77,6 +77,7 @@ class WinUWPH264DecoderImpl : public VideoDecoder {
 
  private:
   void UpdateVideoFrameDimensions(const EncodedImage& input_image);
+  int FlushFrames();
 
  private:
   ComPtr<IMFTransform> m_spDecoder;
