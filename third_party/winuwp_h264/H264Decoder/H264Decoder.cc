@@ -240,22 +240,22 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     DWORD status;
     hr = m_spDecoder->ProcessOutput(0, 1, &outputDataBuffer, &status);
 
-	if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
-	  // TODO: we don't handle this yet
+    if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+      // TODO: we don't handle this yet
       __debugbreak();
-	}
+    }
 
     if (FAILED(hr))
       return hr; /* can return MF_E_TRANSFORM_NEED_MORE_INPUT (entirely acceptable) */
 
     // Copy raw output sample data to video frame buffer.
-	ComPtr<IMFMediaBuffer> srcBuffer;
+    ComPtr<IMFMediaBuffer> srcBuffer;
     HRESULT hr = spOutSample->ConvertToContiguousBuffer(&srcBuffer);
     if (FAILED(hr)) {
       return hr;
     }
 
-	// TODO: libvpx vp8 impl uses I420BufferPool to make these which should
+    // TODO: libvpx vp8 impl uses I420BufferPool to make these which should
     // reduce allocations.
     rtc::scoped_refptr<I420Buffer> buffer(
         new rtc::RefCountedObject<I420Buffer>(width_, height_));
@@ -272,15 +272,15 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
       if (FAILED(hr))
         return hr;
 
-	  // TODO: should be the same as curLen, but calculated manually for now
-	  //       to avoid heap corruption in case unhandled format change results
-	  //       in too big of a buffer in MF sample.
+      // TODO: should be the same as curLen, but calculated manually for now
+      //       to avoid heap corruption in case unhandled format change results
+      //       in too big of a buffer in MF sample.
       int stride_y = width_;
       int stride_u = (width_ + 1) / 2;
       int stride_v = (width_ + 1) / 2;
-	  int yuv_size = stride_y* height_ + (stride_u + stride_v) * ((height_ + 1) / 2);
+      int yuv_size = stride_y* height_ + (stride_u + stride_v) * ((height_ + 1) / 2);
 
-	  memcpy(buffer->MutableDataY(), pSrcData, yuv_size);
+      memcpy(buffer->MutableDataY(), pSrcData, yuv_size);
 
       hr = srcBuffer->Unlock();
       if (FAILED(hr))
