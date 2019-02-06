@@ -48,8 +48,7 @@ static const int kHighH264QpThreshold = 37;
 // H264 WinUWP Encoder Implementation
 //////////////////////////////////////////
 
-WinUWPH264EncoderImpl::WinUWPH264EncoderImpl()
-{
+WinUWPH264EncoderImpl::WinUWPH264EncoderImpl() {
 }
 
 WinUWPH264EncoderImpl::~WinUWPH264EncoderImpl() {
