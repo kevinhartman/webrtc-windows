@@ -11,6 +11,7 @@
 #include "third_party/winuwp_h264/H264Decoder/H264Decoder.h"
 
 #include <Windows.h>
+#include <codecapi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -42,18 +43,46 @@ namespace webrtc {
  *   - Use rtc C++ coding style (var naming etc).
  *   - Handle stream format changes.
  *   - Use I420BufferPool to reduce allocations when constructing out buffers.
- *   - This code is not thread-safe (like other decoders such as libvpx). Ensure UWP is respecting that.
+ *   - This code is not thread-safe (like other decoders such as libvpx). Ensure
+ * UWP is respecting that.
  *   - Add "needs key frame" member to discard until key frame.
- *   - Check if auto-create output sample is available to reduce allocations (property of some MFTs).
+ *   - Check if auto-create output sample is available to reduce allocations
+ * (property of some MFTs).
  *   - Set CODECAPI_AVLowLatencyMode in case Windows 8 (otherwise it fills all
  *       buffers before emitting decoded frames resulting in huge latency
  *   - Invesitgate varient_true to copy attributes from in to out samples:
  *       https://docs.microsoft.com/en-us/windows/desktop/medfound/basic-mft-processing-model#sample-attributes
- *   - Set MFSampleExtension_Discontinuity on sample when receiving "missing_frames"
- *   - Set props for hw accel: https://docs.microsoft.com/en-us/windows/desktop/medfound/h-264-video-decoder
+ *   - Set MFSampleExtension_Discontinuity on sample when receiving
+ * "missing_frames"
+ *   - Set props for hw accel:
+ * https://docs.microsoft.com/en-us/windows/desktop/medfound/h-264-video-decoder
+ *   - Call Release on MFT resources explicitly if needed.
+ *   - Add logging using RTC logger.
+ *   - Is there more optimal ConvertToContiguous buffer even when no 2D buffer
+ * available?
  *
  * Stretch
- *   - Looks like D3Dbuffer is fastest medium. Try decoding H264 to D3D buffer and use kNative instead of I420.
+ *   - Looks like D3Dbuffer is fastest medium. Try decoding H264 to D3D buffer
+ * and use kNative instead of I420.
+ *
+ * Rate issue debugging
+ *   - Try using RTP time directly for sample time.
+ *   - Check auto-duration for frames.
+ *   - Check if sample time coming out is based after 0 or is same as input.
+ *   - Use WMF trace to see sample time info and look for anything weird.
+ *   - Try starting samples at 0. Keep initial frame time in class. Try for RTP
+ * and NTP timestamps.
+ *   - Try same build on both peers. Try Release mode builds.
+ *   - Try getting framerate directly from format change.
+ *   - Try sending discontinuity flag on first sample.
+ *   - Follow codepath to see if WebRTC is discarding.
+ *   - Use critical section at beginning of decode to ensure single access to
+ * MFT.
+ *   - Try setting render_time on decoded frame to see if there's any impact.
+ *   - MFSampleExtension_CleanPoint?
+ *   - data.frame_ =
+ * std::make_unique<webrtc::VideoFrame>(frame.video_frame_buffer(),
+ * frame.rotation(), frame.timestamp()); looks wrong in media source
  */
 
 WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
@@ -94,7 +123,8 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
                                       int number_of_cores) {
   RTC_LOG(LS_INFO) << "WinUWPH264DecoderImpl::InitDecode()\n";
 
-  ULONG frameRateNumerator = 30; /* TODO: take framerate from inst: inst->maxFramerate ? */
+  ULONG frameRateNumerator =
+      30; /* TODO: take framerate from inst: inst->maxFramerate ? */
   ULONG frameRateDenominator = 1;
   ULONG imageWidth = inst->width;
   ULONG imageHeight = inst->height;
@@ -113,6 +143,22 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   if (FAILED(hr))
     return WEBRTC_VIDEO_CODEC_ERROR;
 
+  // Set decoder attributes
+  ComPtr<IMFAttributes> decoderAttrs;
+  hr = m_spDecoder->GetAttributes(decoderAttrs.GetAddressOf());
+
+  hr = decoderAttrs->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE);
+  if (FAILED(hr)) {
+    // TODO: log, continue.
+    __debugbreak();
+  }
+
+  hr = decoderAttrs->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE);
+  if (FAILED(hr)) {
+    // TODO: log, continue.
+    __debugbreak();
+  }
+
   // Create input media type
   ComPtr<IMFMediaType> spInputMedia;
   hr = MFCreateMediaType(&spInputMedia);
@@ -127,11 +173,15 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
     hr = MFSetAttributeSize(spInputMedia.Get(), MF_MT_FRAME_SIZE, imageWidth,
                             imageHeight);
   if (SUCCEEDED(hr))
-    hr = MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    hr =
+        MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
   // Register the input type with the decoder
   if (SUCCEEDED(hr))
     hr = m_spDecoder->SetInputType(0, spInputMedia.Get(), 0);
+
+  if (FAILED(hr))
+    return WEBRTC_VIDEO_CODEC_ERROR;
 
   // Assert MF supports I420 output
   bool i420_supported;
@@ -167,7 +217,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
   if (SUCCEEDED(hr)) {
     if (MFT_INPUT_STATUS_ACCEPT_DATA != status)
       // H.264 decoder MFT is not accepting data
-      return WEBRTC_VIDEO_CODEC_ERROR;  
+      return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
   if (SUCCEEDED(hr))
@@ -186,12 +236,13 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
 /**
  * Workaround [MF H264 bug: Output status is never set, even when ready]
  *  => For now, always mark "ready" (results in extra buffer alloc/dealloc).
- *  => Might have no perf impact if H264 MFT supports output buffer auto-creation.
+ *  => Might have no perf impact if H264 MFT supports output buffer
+ * auto-creation.
  */
 HRESULT GetOutputStatus(ComPtr<IMFTransform> decoder, DWORD* output_status) {
   HRESULT hr = decoder->GetOutputStatus(output_status);
 
-  // Don't trust output status.
+  // Don't MFT trust output status for now.
   *output_status = MFT_OUTPUT_STATUS_SAMPLE_READY;
   return hr;
 }
@@ -217,9 +268,8 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     if (FAILED(hr))
       return hr;
 
-    // TODO: MF can potentially provide us one of these for free (check if
-    // provided in MF h264 decoder) so in that case, we can skip buffer and
-    // sample creation.
+    // TODO: MF can provide us with sample automatically when using DirectX impl.
+    //       We can skip sample creation in that case.
     ComPtr<IMFSample> spOutSample;
     hr = MFCreateSample(&spOutSample);
     if (FAILED(hr))
@@ -246,7 +296,8 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     }
 
     if (FAILED(hr))
-      return hr; /* can return MF_E_TRANSFORM_NEED_MORE_INPUT (entirely acceptable) */
+      return hr; /* can return MF_E_TRANSFORM_NEED_MORE_INPUT (entirely
+                    acceptable) */
 
     // Copy raw output sample data to video frame buffer.
     ComPtr<IMFMediaBuffer> srcBuffer;
@@ -278,7 +329,8 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
       int stride_y = width_;
       int stride_u = (width_ + 1) / 2;
       int stride_v = (width_ + 1) / 2;
-      int yuv_size = stride_y* height_ + (stride_u + stride_v) * ((height_ + 1) / 2);
+      int yuv_size =
+          stride_y * height_ + (stride_u + stride_v) * ((height_ + 1) / 2);
 
       memcpy(buffer->MutableDataY(), pSrcData, yuv_size);
 
@@ -292,19 +344,26 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     if (FAILED(hr))
       return hr;
 
-    // We use the timestamp directly from Media Foundation sample, which will be
-    // interpolated properly
-    // TODO: should we use rtp overload of this constructor? Hopefully this one
-    // can derive it from timestamp_us
-    VideoFrame decodedFrame(
-        buffer, kVideoRotation_0,
-        sampleTime / 10 /* convert 100-nanosecond unit to microseconds */);
+    // VideoFrame decodedFrame(
+    //    buffer, kVideoRotation_0,
+    //    sampleTime / 10 /* convert 100-nanosecond unit to microseconds */);
+
+    // TODO: The commented-out constructor above doesn't seem to work (ntp).
+    //       Instead, we ignore the MFT sample time out, using rtp from in
+    //       frame that triggered this decoded frame. If we keep this approach,
+    //       it may be better to use the rtp timestamp of the earliest frame
+    //       that contributed to the decoded frame instead.
+    //       
+    VideoFrame decodedFrame(buffer, rtp_timestamp, 0, kVideoRotation_0);
 
     // Use ntp time from the earliest frame
     decodedFrame.set_ntp_time_ms(ntp_time_ms);
 
     // Emit image to downstream
-    decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt, absl::nullopt);
+    decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt,
+                                     absl::nullopt);
+
+    frames_out_++;
   }
 
   return hr;
@@ -312,8 +371,10 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
 
 // TODO: handle missing frames not yet implemented
 // TODO: reuse input buffers if possible to save on allocations
-// Note: acceptable to return MF_E_NOTACCEPTING (though it shouldn't since
-// last loop should've flushed)
+/**
+ * Note: acceptable to return MF_E_NOTACCEPTING (though it shouldn't since
+ * last loop should've flushed)
+ */
 HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
                                             bool missing_frames) {
   // Create a MF buffer from our data
@@ -348,25 +409,46 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
   if (FAILED(hr))
     return hr;
 
-  hr = spSample->SetSampleTime(
-      input_image.capture_time_ms_ *
-      10000 /* convert milliseconds to 100-nanosecond unit */);
+  hr = spSample->SetSampleTime(input_image.ntp_time_ms_ * 10000 /* convert milliseconds to 100-nanosecond unit */);
   if (FAILED(hr))
     return hr;
 
+  // TODO: set duration explicitly.
+
   // Enqueue sample with Media Foundation
-  return m_spDecoder->ProcessInput(0, spSample.Get(), 0);
+  hr = m_spDecoder->ProcessInput(0, spSample.Get(), 0);
+
+  if (SUCCEEDED(hr))
+    frames_in_++;
+
+  return hr;
 }
 
 int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
                                   bool missing_frames,
                                   const CodecSpecificInfo* codec_specific_info,
                                   int64_t render_time_ms) {
+  decode_calls_++;
   HRESULT hr = S_OK;
 
   // TODO: add additional precondition checks
   if (decodeCompleteCallback_ == NULL) {
     return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  }
+
+  // Require timestamps.
+  if (input_image.ntp_time_ms_ < 0) {
+    return WEBRTC_VIDEO_CODEC_ERROR;
+  }
+
+  // Discard until keyframe.
+  if (require_keyframe_) {
+    if (input_image._frameType != kVideoFrameKey ||
+        !input_image._completeFrame) {
+      return WEBRTC_VIDEO_CODEC_ERROR;
+    } else {
+      require_keyframe_ = false;
+    }
   }
 
   // Enqueue the new frame with Media Foundation

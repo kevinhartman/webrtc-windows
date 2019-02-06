@@ -84,10 +84,16 @@ class WinUWPH264DecoderImpl : public VideoDecoder {
  private:
   ComPtr<IMFTransform> m_spDecoder;
 
+  bool require_keyframe_ = true;
   uint32_t width_;
   uint32_t height_;
   rtc::CriticalSection crit_;
   DecodedImageCallback* decodeCompleteCallback_;
+
+  // Debug
+  uint64_t decode_calls_ = 0;
+  uint64_t frames_in_ = 0;
+  uint64_t frames_out_ = 0;
 };  // end of WinUWPH264DecoderImpl class
 
 }  // namespace webrtc
