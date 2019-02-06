@@ -119,7 +119,8 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     rtc::CritScope lock(&crit_);
 
     if (decodeCompleteCallback_ != nullptr) {
-      decodeCompleteCallback_->Decoded(decodedFrame);
+      // Phong Cao: TODO Update decoding time and qp values.
+      decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt, 0);
     }
   }
   return WEBRTC_VIDEO_CODEC_OK;
