@@ -362,8 +362,6 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     // Emit image to downstream
     decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt,
                                      absl::nullopt);
-
-    frames_out_++;
   }
 
   return hr;
@@ -417,10 +415,6 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
 
   // Enqueue sample with Media Foundation
   hr = m_spDecoder->ProcessInput(0, spSample.Get(), 0);
-
-  if (SUCCEEDED(hr))
-    frames_in_++;
-
   return hr;
 }
 
@@ -428,7 +422,6 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
                                   bool missing_frames,
                                   const CodecSpecificInfo* codec_specific_info,
                                   int64_t render_time_ms) {
-  decode_calls_++;
   HRESULT hr = S_OK;
 
   // TODO: add additional precondition checks
