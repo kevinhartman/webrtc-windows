@@ -407,7 +407,15 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
   if (FAILED(hr))
     return hr;
 
-  hr = spSample->SetSampleTime(input_image.ntp_time_ms_ * 10000 /* convert milliseconds to 100-nanosecond unit */);
+  int64_t sampleTimeMs;
+  if (first_frame_rtp_ == 0) {
+    first_frame_rtp_ = input_image.Timestamp();
+    sampleTimeMs = 0;
+  } else {
+    sampleTimeMs = (static_cast<uint64_t>(input_image.Timestamp()) - first_frame_rtp_) / 90.0 + 0.5f;
+  }
+
+  hr = spSample->SetSampleTime(sampleTimeMs * 10000 /* convert milliseconds to 100-nanosecond unit */);
   if (FAILED(hr))
     return hr;
 
@@ -427,11 +435,6 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   // TODO: add additional precondition checks
   if (decodeCompleteCallback_ == NULL) {
     return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-  }
-
-  // Require timestamps.
-  if (input_image.ntp_time_ms_ < 0) {
-    return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
   // Discard until keyframe.
