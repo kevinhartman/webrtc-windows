@@ -176,6 +176,10 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
     hr =
         MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
+  if (SUCCEEDED(hr))
+    hr = spInputMedia->SetUINT32(MF_MT_INTERLACE_MODE,
+                                 MFVideoInterlace_MixedInterlaceOrProgressive);
+
   // Register the input type with the decoder
   if (SUCCEEDED(hr))
     hr = m_spDecoder->SetInputType(0, spInputMedia.Get(), 0);
@@ -198,6 +202,8 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
     hr = spOutputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
   if (SUCCEEDED(hr))
     hr = spOutputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_I420);
+  if (SUCCEEDED(hr))
+    hr = spOutputMedia->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
   if (SUCCEEDED(hr))
     hr = MFSetAttributeRatio(spOutputMedia.Get(), MF_MT_FRAME_RATE,
                              frameRateNumerator, frameRateDenominator);
@@ -419,7 +425,21 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
   if (FAILED(hr))
     return hr;
 
-  // TODO: set duration explicitly.
+
+  // Set sample attributes
+  ComPtr<IMFAttributes> sampleAttributes;
+  hr = spSample.As(&sampleAttributes);
+
+  if (FAILED(hr))
+    return hr;
+
+  if (input_image._frameType == kVideoFrameKey && input_image._completeFrame) {
+    sampleAttributes->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
+  }
+
+  if (missing_frames) {
+    sampleAttributes->SetUINT32(MFSampleExtension_Discontinuity, TRUE);
+  }
 
   // Enqueue sample with Media Foundation
   hr = m_spDecoder->ProcessInput(0, spSample.Get(), 0);
