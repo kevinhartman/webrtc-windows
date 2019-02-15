@@ -86,6 +86,7 @@ class WinUWPH264DecoderImpl : public H264Decoder {
   ComPtr<IMFTransform> m_spDecoder;
 
   bool require_keyframe_ = true;
+  uint32_t first_frame_rtp_ = 0;
   uint32_t width_;
   uint32_t height_;
   rtc::CriticalSection crit_;
