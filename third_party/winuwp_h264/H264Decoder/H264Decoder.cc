@@ -119,15 +119,15 @@ HRESULT SupportsMediaType(ComPtr<IMFTransform> decoder,
   }
 }
 
-int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* inst,
+int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
                                       int number_of_cores) {
   RTC_LOG(LS_INFO) << "WinUWPH264DecoderImpl::InitDecode()\n";
 
-  ULONG frameRateNumerator =
-      30; /* TODO: take framerate from inst: inst->maxFramerate ? */
+  // TODO: take framerate from codec_settings: codec_settings->maxFramerate ?
+  ULONG frameRateNumerator = 30;
   ULONG frameRateDenominator = 1;
-  ULONG imageWidth = inst->width;
-  ULONG imageHeight = inst->height;
+  ULONG imageWidth = codec_settings->width;
+  ULONG imageHeight = codec_settings->height;
 
   width_ = imageWidth;
   height_ = imageHeight;
@@ -274,7 +274,8 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     if (FAILED(hr))
       return hr;
 
-    // TODO: MF can provide us with sample automatically when using DirectX impl.
+    // TODO: MF can provide us with sample automatically when using DirectX
+    // impl.
     //       We can skip sample creation in that case.
     ComPtr<IMFSample> spOutSample;
     hr = MFCreateSample(&spOutSample);
@@ -359,15 +360,16 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     //       frame that triggered this decoded frame. If we keep this approach,
     //       it may be better to use the rtp timestamp of the earliest frame
     //       that contributed to the decoded frame instead.
-    //       
+    //
     VideoFrame decodedFrame(buffer, rtp_timestamp, 0, kVideoRotation_0);
 
     // Use ntp time from the earliest frame
     decodedFrame.set_ntp_time_ms(ntp_time_ms);
 
     // Emit image to downstream
-    decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt,
-                                     absl::nullopt);
+    if (decodeCompleteCallback_ != nullptr) {
+      decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt, absl::nullopt);
+    }
   }
 
   return hr;
@@ -424,7 +426,6 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
   hr = spSample->SetSampleTime(sampleTimeMs * 10000 /* convert milliseconds to 100-nanosecond unit */);
   if (FAILED(hr))
     return hr;
-
 
   // Set sample attributes
   ComPtr<IMFAttributes> sampleAttributes;

@@ -27,6 +27,7 @@
 #include "H264StreamSink.h"
 #include "H264MediaSink.h"
 #include "../Utils/Utils.h"
+#include "modules/video_coding/codecs/multiplex/include/augmented_video_frame_buffer.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "rtc_base/timeutils.h"
 #include "libyuv/convert.h"
@@ -47,8 +48,7 @@ static const int kHighH264QpThreshold = 37;
 // H264 WinUWP Encoder Implementation
 //////////////////////////////////////////
 
-WinUWPH264EncoderImpl::WinUWPH264EncoderImpl()
-{
+WinUWPH264EncoderImpl::WinUWPH264EncoderImpl() {
 }
 
 WinUWPH264EncoderImpl::~WinUWPH264EncoderImpl() {
@@ -189,8 +189,15 @@ ComPtr<IMFSample> WinUWPH264EncoderImpl::FromVideoFrame(const VideoFrame& frame)
   ComPtr<IMFAttributes> sampleAttributes;
   ON_SUCCEEDED(sample.As(&sampleAttributes));
 
+  VideoFrameBuffer* buffer = frame.video_frame_buffer().get();
+  AugmentedVideoFrameBuffer* augBuffer =
+      dynamic_cast<AugmentedVideoFrameBuffer*>(buffer);
+  if (augBuffer != nullptr) {
+    buffer = augBuffer->GetVideoFrameBuffer().get();
+  }
+
   rtc::scoped_refptr<I420BufferInterface> frameBuffer =
-      static_cast<I420BufferInterface*>(frame.video_frame_buffer().get());
+      static_cast<I420BufferInterface*>(buffer);
 
   if (SUCCEEDED(hr)) {
     auto totalSize = frameBuffer->StrideY() * frameBuffer->height() +
