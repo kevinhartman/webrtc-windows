@@ -39,6 +39,7 @@ namespace webrtc {
 //////////////////////////////////////////
 /**
  * Pending work [kevin@hart.mn]
+ *   - Switch to NV12 decode format out. Needed to use HW decoder.
  *   - Use consistent return code handling convention (ON_SUCCEEDED for RTC).
  *   - Use rtc C++ coding style (var naming etc).
  *   - Handle stream format changes.
@@ -124,18 +125,68 @@ HRESULT SupportsMediaType(ComPtr<IMFTransform> decoder,
   }
 }
 
+HRESULT CreateInputMediaType(
+    IMFMediaType** pp_input_media,
+    UINT32 img_width,
+    UINT32 img_height,
+    UINT32 frame_rate_num,
+    UINT32 frame_rate_denom,
+    UINT32 aspect_num,
+    UINT32 aspect_denom) {
+    HRESULT hr = MFCreateMediaType(pp_input_media);
+    IMFMediaType* spInputMedia = *pp_input_media;
+
+    if (SUCCEEDED(hr))
+      hr = spInputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (SUCCEEDED(hr))
+      hr = spInputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+    if (SUCCEEDED(hr))
+      hr = MFSetAttributeRatio(spInputMedia, MF_MT_FRAME_RATE,
+            frame_rate_num, frame_rate_denom);
+    if (SUCCEEDED(hr))
+      hr = MFSetAttributeSize(spInputMedia, MF_MT_FRAME_SIZE, img_width,
+            img_height);
+    if (SUCCEEDED(hr))
+      hr =
+        MFSetAttributeRatio(spInputMedia, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+
+    if (SUCCEEDED(hr))
+      hr = spInputMedia->SetUINT32(MF_MT_INTERLACE_MODE,
+            MFVideoInterlace_MixedInterlaceOrProgressive);
+
+    return hr;
+}
+
+HRESULT CreateOutputMediaType(IMFMediaType** pp_output_media, GUID media_type,
+    UINT32 img_width,
+    UINT32 img_height,
+    UINT32 frame_rate_num,
+    UINT32 frame_rate_denom) {
+    HRESULT hr = MFCreateMediaType(pp_output_media);
+    IMFMediaType* spOutputMedia = *pp_output_media;
+
+    if (SUCCEEDED(hr))
+        hr = spOutputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (SUCCEEDED(hr))
+        hr = spOutputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_I420);
+    if (SUCCEEDED(hr))
+        hr = spOutputMedia->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+    if (SUCCEEDED(hr))
+        hr = MFSetAttributeRatio(spOutputMedia, MF_MT_FRAME_RATE,
+            frame_rate_num, frame_rate_denom);
+    if (SUCCEEDED(hr))
+        hr = MFSetAttributeSize(spOutputMedia, MF_MT_FRAME_SIZE, img_width,
+            img_height);
+
+    return hr;
+}
+
 int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
                                       int number_of_cores) {
   RTC_LOG(LS_INFO) << "WinUWPH264DecoderImpl::InitDecode()\n";
 
-  // TODO: take framerate from codec_settings: codec_settings->maxFramerate ?
-  ULONG frameRateNumerator = 30;
-  ULONG frameRateDenominator = 1;
-  ULONG imageWidth = codec_settings->width;
-  ULONG imageHeight = codec_settings->height;
-
-  width_ = imageWidth;
-  height_ = imageHeight;
+  width_ = codec_settings->width;
+  height_ = codec_settings->height;
 
   HRESULT hr = CoInitializeEx(0, COINIT_APARTMENTTHREADED);
   if (SUCCEEDED(hr))
@@ -164,26 +215,21 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
     __debugbreak();
   }
 
-  // Create input media type
-  ComPtr<IMFMediaType> spInputMedia;
-  hr = MFCreateMediaType(&spInputMedia);
-  if (SUCCEEDED(hr))
-    hr = spInputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  if (SUCCEEDED(hr))
-    hr = spInputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
-  if (SUCCEEDED(hr))
-    hr = MFSetAttributeRatio(spInputMedia.Get(), MF_MT_FRAME_RATE,
-                             frameRateNumerator, frameRateDenominator);
-  if (SUCCEEDED(hr))
-    hr = MFSetAttributeSize(spInputMedia.Get(), MF_MT_FRAME_SIZE, imageWidth,
-                            imageHeight);
-  if (SUCCEEDED(hr))
-    hr =
-        MFSetAttributeRatio(spInputMedia.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+  auto frame_rate = codec_settings->maxFramerate > 0 
+      ? codec_settings->maxFramerate : FRAME_RATE_DEFAULT;
 
-  if (SUCCEEDED(hr))
-    hr = spInputMedia->SetUINT32(MF_MT_INTERLACE_MODE,
-                                 MFVideoInterlace_MixedInterlaceOrProgressive);
+  ComPtr<IMFMediaType> spInputMedia;
+  hr = CreateInputMediaType(
+      spInputMedia.GetAddressOf(),
+      width_, 
+      height_,
+      frame_rate,
+      1 /* frame rate denom */,
+      1 /* aspect num */,
+      1 /* aspect denom */);
+
+  if (FAILED(hr))
+    return WEBRTC_VIDEO_CODEC_ERROR;
 
   // Register the input type with the decoder
   if (SUCCEEDED(hr))
@@ -201,20 +247,13 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
 
   // Create output media type
   ComPtr<IMFMediaType> spOutputMedia;
-  if (SUCCEEDED(hr))
-    hr = MFCreateMediaType(&spOutputMedia);
-  if (SUCCEEDED(hr))
-    hr = spOutputMedia->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-  if (SUCCEEDED(hr))
-    hr = spOutputMedia->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_I420);
-  if (SUCCEEDED(hr))
-    hr = spOutputMedia->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-  if (SUCCEEDED(hr))
-    hr = MFSetAttributeRatio(spOutputMedia.Get(), MF_MT_FRAME_RATE,
-                             frameRateNumerator, frameRateDenominator);
-  if (SUCCEEDED(hr))
-    hr = MFSetAttributeSize(spOutputMedia.Get(), MF_MT_FRAME_SIZE, imageWidth,
-                            imageHeight);
+  hr = CreateOutputMediaType(
+      spOutputMedia.GetAddressOf(),
+      MFVideoFormat_I420, 
+      width_,
+      height_, 
+      frame_rate,
+      1 /* frame rate denom */);
 
   // Assign output media type to decoder
   if (SUCCEEDED(hr))
