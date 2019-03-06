@@ -85,8 +85,13 @@ namespace webrtc {
  * frame.rotation(), frame.timestamp()); looks wrong in media source
  */
 
+static const auto FRAME_RATE_DEFAULT = 30;
+
 WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
-    : width_(0), height_(0), decodeCompleteCallback_(nullptr) {}
+    : width_(0),
+      height_(0),
+      decodeCompleteCallback_(nullptr),
+      buffer_pool_(false, 300) /* max_number_of_buffers*/ {}
 
 WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl() {
   OutputDebugString(L"WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl()\n");
@@ -313,10 +318,14 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
       return hr;
     }
 
-    // TODO: libvpx vp8 impl uses I420BufferPool to make these which should
-    // reduce allocations.
-    rtc::scoped_refptr<I420Buffer> buffer(
-        new rtc::RefCountedObject<I420Buffer>(width_, height_));
+    rtc::scoped_refptr<I420Buffer> buffer =
+        buffer_pool_.CreateBuffer(width_, height_);
+
+    if (!buffer.get()) {
+        // Pool has too many pending frames.
+        RTC_LOG(LS_WARNING) << "WinUWPH264DecoderImpl::FlushFrames(): Too many frames. Dropping frame.";
+        return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
+    }
 
     DWORD curLength;
     hr = srcBuffer->GetCurrentLength(&curLength);
