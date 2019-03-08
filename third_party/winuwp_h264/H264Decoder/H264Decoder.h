@@ -78,7 +78,6 @@ class WinUWPH264DecoderImpl : public H264Decoder {
   const char* ImplementationName() const override;
 
  private:
-  void UpdateVideoFrameDimensions(const EncodedImage& input_image);
   HRESULT FlushFrames(uint32_t timestamp, uint64_t ntp_time_ms);
   HRESULT EnqueueFrame(const EncodedImage& input_image, bool missing_frames);
 
@@ -88,8 +87,8 @@ class WinUWPH264DecoderImpl : public H264Decoder {
 
   bool require_keyframe_ = true;
   uint32_t first_frame_rtp_ = 0;
-  uint32_t width_;
-  uint32_t height_;
+  absl::optional<uint32_t> width_;
+  absl::optional<uint32_t> height_;
   rtc::CriticalSection crit_;
   DecodedImageCallback* decodeCompleteCallback_;
 };  // end of WinUWPH264DecoderImpl class
