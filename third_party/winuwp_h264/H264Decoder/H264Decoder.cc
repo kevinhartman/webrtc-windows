@@ -40,14 +40,13 @@ namespace webrtc {
 /**
  * Pending work [kevin@hart.mn]
  *   - Switch to NV12 decode format out. Needed to use HW decoder.
- *   - Use rtc C++ coding style (var naming etc).
  */
 
 WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
-    : width_(absl::nullopt),
-      height_(absl::nullopt),
-      decodeCompleteCallback_(nullptr),
-      buffer_pool_(false, 300) /* max_number_of_buffers*/ {}
+  : width_(absl::nullopt),
+    height_(absl::nullopt),
+    decode_complete_callback_(nullptr),
+    buffer_pool_(false, 300) /* max_number_of_buffers*/ {}
 
 WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl() {
   OutputDebugString(L"WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl()\n");
@@ -56,22 +55,23 @@ WinUWPH264DecoderImpl::~WinUWPH264DecoderImpl() {
 
 HRESULT ConfigureOutputMediaType(ComPtr<IMFTransform> decoder,
                                  GUID media_type, bool *type_found) {
+  HRESULT hr = S_OK;
   *type_found = false;
 
   int type = 0;
   while (true) {
-    ComPtr<IMFMediaType> spMediaType;
-    HRESULT hr = decoder->GetOutputAvailableType(0, type, &spMediaType);
+    ComPtr<IMFMediaType> output_media;
+    ON_SUCCEEDED(decoder->GetOutputAvailableType(0, type, &output_media));
     if (hr == MF_E_NO_MORE_TYPES)
       return S_OK;
 
     GUID cur_type;
-    ON_SUCCEEDED(spMediaType->GetGUID(MF_MT_SUBTYPE, &cur_type));
+    ON_SUCCEEDED(output_media->GetGUID(MF_MT_SUBTYPE, &cur_type));
     if (FAILED(hr))
       return hr;
 
     if (cur_type == media_type) {
-      hr = decoder->SetOutputType(0, spMediaType.Get(), 0);
+      hr = decoder->SetOutputType(0, output_media.Get(), 0);
       ON_SUCCEEDED(*type_found = true);
       return hr;
     }
@@ -113,7 +113,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   ON_SUCCEEDED(MFStartup(MF_VERSION, 0));
 
   ON_SUCCEEDED(CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_IUnknown, (void**)&m_spDecoder));
+                                IID_IUnknown, (void**)&decoder_));
 
   if (FAILED(hr)) {
     RTC_LOG(LS_ERROR) << "Init failure: could not create Media Foundation H264 decoder instance.";
@@ -121,17 +121,17 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   }
 
   // Try set decoder attributes
-  ComPtr<IMFAttributes> decoderAttrs;
-  ON_SUCCEEDED(m_spDecoder->GetAttributes(decoderAttrs.GetAddressOf()));
+  ComPtr<IMFAttributes> decoder_attrs;
+  ON_SUCCEEDED(decoder_->GetAttributes(decoder_attrs.GetAddressOf()));
 
   if (SUCCEEDED(hr)) {
-    ON_SUCCEEDED(decoderAttrs->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE));
+    ON_SUCCEEDED(decoder_attrs->SetUINT32(CODECAPI_AVLowLatencyMode, TRUE));
     if (FAILED(hr)) {
       RTC_LOG(LS_WARNING) << "Init warning: failed to set low latency in H264 decoder.";
       hr = S_OK;
     }
 
-    ON_SUCCEEDED(decoderAttrs->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
+    ON_SUCCEEDED(decoder_attrs->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
     if (FAILED(hr)) {
       RTC_LOG(LS_WARNING) << "Init warning: failed to set HW accel in H264 decoder.";
     }
@@ -140,8 +140,8 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   // Clear any error from try set attributes
   hr = S_OK;
 
-  ComPtr<IMFMediaType> spInputMedia;
-  ON_SUCCEEDED(CreateInputMediaType(spInputMedia.GetAddressOf(), width_, height_,
+  ComPtr<IMFMediaType> input_media;
+  ON_SUCCEEDED(CreateInputMediaType(input_media.GetAddressOf(), width_, height_,
     codec_settings->maxFramerate > 0 ? absl::optional<UINT32>(codec_settings->maxFramerate) : absl::nullopt));
 
   if (FAILED(hr)) {
@@ -150,7 +150,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   }
 
   // Register the input type with the decoder
-  ON_SUCCEEDED(m_spDecoder->SetInputType(0, spInputMedia.Get(), 0));
+  ON_SUCCEEDED(decoder_->SetInputType(0, input_media.Get(), 0));
 
   if (FAILED(hr)) {
     RTC_LOG(LS_ERROR) << "Init failure: failed to set input media type on decoder.";
@@ -159,7 +159,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
 
   // Assert MF supports I420 output
   bool suitable_type_found;
-  ON_SUCCEEDED(ConfigureOutputMediaType(m_spDecoder, MFVideoFormat_I420, &suitable_type_found));
+  ON_SUCCEEDED(ConfigureOutputMediaType(decoder_, MFVideoFormat_I420, &suitable_type_found));
 
   if (FAILED(hr) || !suitable_type_found) {
     RTC_LOG(LS_ERROR) << "Init failure: failed to find a valid output media type for decoding.";
@@ -167,7 +167,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   }
 
   DWORD status;
-  ON_SUCCEEDED(m_spDecoder->GetInputStatus(0, &status));
+  ON_SUCCEEDED(decoder_->GetInputStatus(0, &status));
 
   // Validate that decoder is up and running
   if (SUCCEEDED(hr)) {
@@ -176,9 +176,9 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
       return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
-  ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
-  ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
-  ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
+  ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
+  ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
+  ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
 
   inited_ = true;
   return SUCCEEDED(hr) ? WEBRTC_VIDEO_CODEC_OK : WEBRTC_VIDEO_CODEC_ERROR;
@@ -203,59 +203,59 @@ HRESULT GetOutputStatus(ComPtr<IMFTransform> decoder, DWORD* output_status) {
 HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
                                            uint64_t ntp_time_ms) {
   HRESULT hr;
-  DWORD outputStatus;
+  DWORD output_status;
 
-  while (SUCCEEDED(hr = GetOutputStatus(m_spDecoder, &outputStatus)) &&
-         outputStatus == MFT_OUTPUT_STATUS_SAMPLE_READY) {
+  while (SUCCEEDED(hr = GetOutputStatus(decoder_, &output_status)) &&
+         output_status == MFT_OUTPUT_STATUS_SAMPLE_READY) {
     // Get needed size of our output buffer
-    MFT_OUTPUT_STREAM_INFO strmInfo;
-    ON_SUCCEEDED(m_spDecoder->GetOutputStreamInfo(0, &strmInfo));
+    MFT_OUTPUT_STREAM_INFO strm_info;
+    ON_SUCCEEDED(decoder_->GetOutputStreamInfo(0, &strm_info));
     if (FAILED(hr)) {
       RTC_LOG(LS_ERROR) << "Decode failure: failed to get output stream info.";
       return hr;
     }
 
     // Create output sample
-    ComPtr<IMFMediaBuffer> spOutBuffer;
-    ON_SUCCEEDED(MFCreateMemoryBuffer(strmInfo.cbSize, &spOutBuffer));
+    ComPtr<IMFMediaBuffer> out_buffer;
+    ON_SUCCEEDED(MFCreateMemoryBuffer(strm_info.cbSize, &out_buffer));
     if (FAILED(hr)) {
       RTC_LOG(LS_ERROR) << "Decode failure: output image memory buffer creation failed.";
       return hr;
     }
 
-    ComPtr<IMFSample> spOutSample;
-    ON_SUCCEEDED(MFCreateSample(&spOutSample));
+    ComPtr<IMFSample> out_sample;
+    ON_SUCCEEDED(MFCreateSample(&out_sample));
     if (FAILED(hr)) {
-      RTC_LOG(LS_ERROR) << "Decode failure: output sample creation failed.";
+      RTC_LOG(LS_ERROR) << "Decode failure: output in_sample creation failed.";
       return hr;
     }
 
-    ON_SUCCEEDED(spOutSample->AddBuffer(spOutBuffer.Get()));
+    ON_SUCCEEDED(out_sample->AddBuffer(out_buffer.Get()));
     if (FAILED(hr)) {
-      RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to output sample.";
+      RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to output in_sample.";
       return hr;
     }
 
     // Create output buffer description
-    MFT_OUTPUT_DATA_BUFFER outputDataBuffer;
-    outputDataBuffer.dwStatus = 0;
-    outputDataBuffer.dwStreamID = 0;
-    outputDataBuffer.pEvents = nullptr;
-    outputDataBuffer.pSample = spOutSample.Get();
+    MFT_OUTPUT_DATA_BUFFER output_data_buffer;
+    output_data_buffer.dwStatus = 0;
+    output_data_buffer.dwStreamID = 0;
+    output_data_buffer.pEvents = nullptr;
+    output_data_buffer.pSample = out_sample.Get();
 
     // Invoke the Media Foundation decoder
     // Note: we don't use ON_SUCCEEDED here since ProcessOutput returns
     //       MF_E_TRANSFORM_NEED_MORE_INPUT often.
     DWORD status;
-    hr = m_spDecoder->ProcessOutput(0, 1, &outputDataBuffer, &status);
+    hr = decoder_->ProcessOutput(0, 1, &output_data_buffer, &status);
 
     if (FAILED(hr))
       return hr; /* can return MF_E_TRANSFORM_NEED_MORE_INPUT or 
                     MF_E_TRANSFORM_STREAM_CHANGE (entirely acceptable) */
 
     // Copy raw output sample data to video frame buffer.
-    ComPtr<IMFMediaBuffer> srcBuffer;
-    ON_SUCCEEDED(spOutSample->ConvertToContiguousBuffer(&srcBuffer));
+    ComPtr<IMFMediaBuffer> src_buffer;
+    ON_SUCCEEDED(out_sample->ConvertToContiguousBuffer(&src_buffer));
     if (FAILED(hr)) {
       RTC_LOG(LS_ERROR) << "Decode failure: failed to get contiguous buffer.";
       return hr;
@@ -263,12 +263,12 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
 
     uint32_t width, height;
     if (width_.has_value() && height_.has_value()) {
-        width = width_.value();
-        height = height_.value();
+      width = width_.value();
+      height = height_.value();
     } else {
       // Query the size from MF output media type
       ComPtr<IMFMediaType> output_type;
-      ON_SUCCEEDED(m_spDecoder->GetOutputCurrentType(0, output_type.GetAddressOf()));
+      ON_SUCCEEDED(decoder_->GetOutputCurrentType(0, output_type.GetAddressOf()));
 
       ON_SUCCEEDED(MFGetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, &width, &height));
       if (FAILED(hr)) {
@@ -282,25 +282,25 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     }
 
     rtc::scoped_refptr<I420Buffer> buffer =
-        buffer_pool_.CreateBuffer(width, height);
+      buffer_pool_.CreateBuffer(width, height);
 
     if (!buffer.get()) {
-        // Pool has too many pending frames.
-        RTC_LOG(LS_WARNING) << "Decode warning: too many frames. Dropping frame.";
-        return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
+      // Pool has too many pending frames.
+      RTC_LOG(LS_WARNING) << "Decode warning: too many frames. Dropping frame.";
+      return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
     }
 
-    DWORD curLength;
-    ON_SUCCEEDED(srcBuffer->GetCurrentLength(&curLength));
+    DWORD cur_length;
+    ON_SUCCEEDED(src_buffer->GetCurrentLength(&cur_length));
     if (FAILED(hr)) {
       RTC_LOG(LS_ERROR) << "Decode failure: could not get buffer length.";
       return hr;
     }
       
-    if (curLength > 0) {
-      BYTE* pSrcData;
-      DWORD maxLen, curLen;
-      ON_SUCCEEDED(srcBuffer->Lock(&pSrcData, &maxLen, &curLen));
+    if (cur_length > 0) {
+      BYTE* src_data;
+      DWORD max_len, cur_len;
+      ON_SUCCEEDED(src_buffer->Lock(&src_data, &max_len, &cur_len));
       if (FAILED(hr)) {
         RTC_LOG(LS_ERROR) << "Decode failure: could lock buffer for copying.";
         return hr;
@@ -313,11 +313,11 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
       int stride_u = (width + 1) / 2;
       int stride_v = (width + 1) / 2;
       int yuv_size =
-          stride_y * height + (stride_u + stride_v) * ((height + 1) / 2);
+        stride_y * height + (stride_u + stride_v) * ((height + 1) / 2);
 
-      memcpy(buffer->MutableDataY(), pSrcData, yuv_size);
+      memcpy(buffer->MutableDataY(), src_data, yuv_size);
 
-      ON_SUCCEEDED(srcBuffer->Unlock());
+      ON_SUCCEEDED(src_buffer->Unlock());
       if (FAILED(hr))
         return hr;
     }
@@ -328,14 +328,14 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     // TODO: Ideally, we should convert sample_time (above) back to 90khz + base and use it in place
     //       of rtp_timestamp, since MF may interpolate it. Instead, we ignore the MFT sample
     //       time out, using rtp from in frame that triggered this decoded frame.
-    VideoFrame decodedFrame(buffer, rtp_timestamp, 0, kVideoRotation_0);
+    VideoFrame decoded_frame(buffer, rtp_timestamp, 0, kVideoRotation_0);
 
     // Use ntp time from the earliest frame
-    decodedFrame.set_ntp_time_ms(ntp_time_ms);
+    decoded_frame.set_ntp_time_ms(ntp_time_ms);
 
     // Emit image to downstream
-    if (decodeCompleteCallback_ != nullptr) {
-      decodeCompleteCallback_->Decoded(decodedFrame, absl::nullopt, absl::nullopt);
+    if (decode_complete_callback_ != nullptr) {
+      decode_complete_callback_->Decoded(decoded_frame, absl::nullopt, absl::nullopt);
     }
   }
 
@@ -351,79 +351,79 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
   HRESULT hr = S_OK;
 
   // Create a MF buffer from our data
-  ComPtr<IMFMediaBuffer> spBuffer;
-  ON_SUCCEEDED(MFCreateMemoryBuffer(input_image._length, &spBuffer));
+  ComPtr<IMFMediaBuffer> in_buffer;
+  ON_SUCCEEDED(MFCreateMemoryBuffer(input_image._length, &in_buffer));
   if (FAILED(hr)) {
     RTC_LOG(LS_ERROR) << "Decode failure: input image memory buffer creation failed.";
     return hr;
   }
 
-  DWORD maxLen, curLen;
-  BYTE* pData;
-  ON_SUCCEEDED(spBuffer->Lock(&pData, &maxLen, &curLen));
+  DWORD max_len, cur_len;
+  BYTE* data;
+  ON_SUCCEEDED(in_buffer->Lock(&data, &max_len, &cur_len));
   if (FAILED(hr))
     return hr;
 
-  memcpy(pData, input_image._buffer, input_image._length);
+  memcpy(data, input_image._buffer, input_image._length);
 
-  ON_SUCCEEDED(spBuffer->Unlock());
+  ON_SUCCEEDED(in_buffer->Unlock());
   if (FAILED(hr))
     return hr;
 
-  ON_SUCCEEDED(spBuffer->SetCurrentLength(input_image._length));
+  ON_SUCCEEDED(in_buffer->SetCurrentLength(input_image._length));
   if (FAILED(hr))
     return hr;
 
   // Create a sample from media buffer
-  ComPtr<IMFSample> spSample;
-  ON_SUCCEEDED(MFCreateSample(&spSample));
+  ComPtr<IMFSample> in_sample;
+  ON_SUCCEEDED(MFCreateSample(&in_sample));
   if (FAILED(hr)) {
-    RTC_LOG(LS_ERROR) << "Decode failure: input sample creation failed.";
+    RTC_LOG(LS_ERROR) << "Decode failure: input in_sample creation failed.";
     return hr;
   }
 
-  ON_SUCCEEDED(spSample->AddBuffer(spBuffer.Get()));
+  ON_SUCCEEDED(in_sample->AddBuffer(in_buffer.Get()));
   if (FAILED(hr)) {
-    RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to input sample.";
+    RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to input in_sample.";
     return hr;
   }
 
-  int64_t sampleTimeMs;
+  int64_t sample_time_ms;
   if (first_frame_rtp_ == 0) {
     first_frame_rtp_ = input_image.Timestamp();
-    sampleTimeMs = 0;
+    sample_time_ms = 0;
   } else {
     // Convert from 90 khz, rounding to nearest ms.
-    sampleTimeMs = (static_cast<uint64_t>(input_image.Timestamp()) - first_frame_rtp_) / 90.0 + 0.5f;
+    sample_time_ms = (static_cast<uint64_t>(input_image.Timestamp()) - first_frame_rtp_) / 90.0 + 0.5f;
   }
 
-  ON_SUCCEEDED(spSample->SetSampleTime(sampleTimeMs * 10000 /* convert milliseconds to 100-nanosecond unit */));
+  ON_SUCCEEDED(in_sample->SetSampleTime(sample_time_ms * 10000 /* convert milliseconds to 100-nanosecond unit */));
   if (FAILED(hr)) {
-    RTC_LOG(LS_ERROR) << "Decode failure: failed to set sample time on input sample.";
+    RTC_LOG(LS_ERROR) << "Decode failure: failed to set in_sample time on input in_sample.";
     return hr;
   }
 
   // Set sample attributes
-  ComPtr<IMFAttributes> sampleAttributes;
-  ON_SUCCEEDED(spSample.As(&sampleAttributes));
+  ComPtr<IMFAttributes> sample_attrs;
+  ON_SUCCEEDED(in_sample.As(&sample_attrs));
 
   if (FAILED(hr)) {
     RTC_LOG(LS_ERROR) << "Decode warning: failed to set image attributes for frame.";
     hr = S_OK;
   } else {
     if (input_image._frameType == kVideoFrameKey && input_image._completeFrame) {
-      ON_SUCCEEDED(sampleAttributes->SetUINT32(MFSampleExtension_CleanPoint, TRUE));
+      ON_SUCCEEDED(sample_attrs->SetUINT32(MFSampleExtension_CleanPoint, TRUE));
       hr = S_OK;
     }
 
     if (missing_frames) {
-      ON_SUCCEEDED(sampleAttributes->SetUINT32(MFSampleExtension_Discontinuity, TRUE));
+      ON_SUCCEEDED(sample_attrs->SetUINT32(MFSampleExtension_Discontinuity, TRUE));
       hr = S_OK;
     }
   }
   
   // Enqueue sample with Media Foundation
-  ON_SUCCEEDED(m_spDecoder->ProcessInput(0, spSample.Get(), 0));
+  ON_SUCCEEDED(decoder_->ProcessInput(0, in_sample.Get(), 0));
   return hr;
 }
 
@@ -437,7 +437,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
   }
 
-  if (decodeCompleteCallback_ == NULL) {
+  if (decode_complete_callback_ == NULL) {
     return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
   }
 
@@ -448,7 +448,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   // Discard until keyframe.
   if (require_keyframe_) {
     if (input_image._frameType != kVideoFrameKey ||
-        !input_image._completeFrame) {
+      !input_image._completeFrame) {
       return WEBRTC_VIDEO_CODEC_ERROR;
     } else {
       require_keyframe_ = false;
@@ -460,7 +460,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   if (hr == MF_E_NOTACCEPTING) {
     // For robustness (shouldn't happen). Flush any old MF data blocking the
     // new frames.
-    hr = m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
+    hr = decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
 
     if (input_image._frameType == kVideoFrameKey) {
       ON_SUCCEEDED(EnqueueFrame(input_image, missing_frames));
@@ -481,7 +481,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
     // Output media type is no longer suitable. Reconfigure and retry.
     bool suitable_type_found;
-    hr = ConfigureOutputMediaType(m_spDecoder, MFVideoFormat_I420, &suitable_type_found);
+    hr = ConfigureOutputMediaType(decoder_, MFVideoFormat_I420, &suitable_type_found);
 
     if (FAILED(hr) || !suitable_type_found)
       return WEBRTC_VIDEO_CODEC_ERROR;
@@ -502,9 +502,9 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
 }
 
 int WinUWPH264DecoderImpl::RegisterDecodeCompleteCallback(
-    DecodedImageCallback* callback) {
+  DecodedImageCallback* callback) {
   rtc::CritScope lock(&crit_);
-  decodeCompleteCallback_ = callback;
+  decode_complete_callback_ = callback;
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
@@ -512,10 +512,10 @@ int WinUWPH264DecoderImpl::Release() {
   OutputDebugString(L"WinUWPH264DecoderImpl::Release()\n");
   HRESULT hr = S_OK;
 
-  if (m_spDecoder != NULL) {
-    ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0));
-    ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, NULL));
-    ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
+  if (decoder_ != NULL) {
+    ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0));
+    ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, NULL));
+    ON_SUCCEEDED(decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
   }
 
   // TODO: this should only be called if CoInitializeEx succeeded to begin with

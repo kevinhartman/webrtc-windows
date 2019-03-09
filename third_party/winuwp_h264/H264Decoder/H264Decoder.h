@@ -54,7 +54,7 @@ class WinUWPH264DecoderImpl : public H264Decoder {
   HRESULT EnqueueFrame(const EncodedImage& input_image, bool missing_frames);
 
  private:
-  ComPtr<IMFTransform> m_spDecoder;
+  ComPtr<IMFTransform> decoder_;
   I420BufferPool buffer_pool_;
 
   bool inited_ = false;
@@ -63,7 +63,7 @@ class WinUWPH264DecoderImpl : public H264Decoder {
   absl::optional<uint32_t> width_;
   absl::optional<uint32_t> height_;
   rtc::CriticalSection crit_;
-  DecodedImageCallback* decodeCompleteCallback_;
+  DecodedImageCallback* decode_complete_callback_;
 };  // end of WinUWPH264DecoderImpl class
 
 }  // namespace webrtc
