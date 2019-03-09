@@ -37,12 +37,8 @@ namespace webrtc {
 //////////////////////////////////////////
 // H264 WinUWP Decoder Implementation
 //////////////////////////////////////////
-/**
- * Pending work [kevin@hart.mn]
- *   - Switch to NV12 decode format out. Needed to use HW decoder.
- */
 
-WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
+    WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
     : width_(absl::nullopt),
       height_(absl::nullopt),
       decode_complete_callback_(nullptr),
@@ -177,9 +173,9 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
     return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
-  // Assert MF supports I420 output
+  // Assert MF supports NV12 output
   bool suitable_type_found;
-  ON_SUCCEEDED(ConfigureOutputMediaType(decoder_, MFVideoFormat_I420,
+  ON_SUCCEEDED(ConfigureOutputMediaType(decoder_, MFVideoFormat_NV12,
                                         &suitable_type_found));
 
   if (FAILED(hr) || !suitable_type_found) {
@@ -336,16 +332,14 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
         return hr;
       }
 
-      // TODO: should be the same as curLen, but calculated manually for now
-      //       to avoid heap corruption in case unhandled format change results
-      //       in too big of a buffer in MF sample.
-      int stride_y = width;
-      int stride_u = (width + 1) / 2;
-      int stride_v = (width + 1) / 2;
-      int yuv_size =
-          stride_y * height + (stride_u + stride_v) * ((height + 1) / 2);
-
-      memcpy(buffer->MutableDataY(), src_data, yuv_size);
+      // Convert NV12 to I420. Y and UV sections have same stride in NV12
+      // (width). The size of the Y section is the size of the frame, since Y
+      // luminance values are 8-bits each.
+      libyuv::NV12ToI420(src_data, width, src_data + (width * height), width,
+                         buffer->MutableDataY(), buffer->StrideY(),
+                         buffer->MutableDataU(), buffer->StrideU(),
+                         buffer->MutableDataV(), buffer->StrideV(), width,
+                         height);
 
       ON_SUCCEEDED(src_buffer->Unlock());
       if (FAILED(hr))
@@ -518,12 +512,12 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     return WEBRTC_VIDEO_CODEC_ERROR;
 
   // Flush any decoded samples resulting from new frame, invoking callback
-  ON_SUCCEEDED(FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_));
+  hr = FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_);
 
   if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
     // Output media type is no longer suitable. Reconfigure and retry.
     bool suitable_type_found;
-    hr = ConfigureOutputMediaType(decoder_, MFVideoFormat_I420,
+    hr = ConfigureOutputMediaType(decoder_, MFVideoFormat_NV12,
                                   &suitable_type_found);
 
     if (FAILED(hr) || !suitable_type_found)
@@ -535,8 +529,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     width_.reset();
     height_.reset();
 
-    ON_SUCCEEDED(
-        FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_));
+    hr = FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_);
   }
 
   if (SUCCEEDED(hr) || hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
