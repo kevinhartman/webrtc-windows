@@ -486,14 +486,14 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   }
 
   // Enqueue the new frame with Media Foundation
-  hr = EnqueueFrame(input_image, missing_frames);
+  ON_SUCCEEDED(EnqueueFrame(input_image, missing_frames));
   if (hr == MF_E_NOTACCEPTING) {
     // For robustness (shouldn't happen). Flush any old MF data blocking the
     // new frames.
-    m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
+    hr = m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
 
     if (input_image._frameType == kVideoFrameKey) {
-      hr = EnqueueFrame(input_image, missing_frames);
+      ON_SUCCEEDED(EnqueueFrame(input_image, missing_frames));
     }
     else
     {
@@ -506,7 +506,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     return WEBRTC_VIDEO_CODEC_ERROR;
 
   // Flush any decoded samples resulting from new frame, invoking callback
-  hr = FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_);
+  ON_SUCCEEDED(FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_));
 
   if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
     // Output media type is no longer suitable. Reconfigure and retry.
@@ -521,7 +521,7 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
     width_.reset();
     height_.reset();
 
-    hr = FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_);
+    ON_SUCCEEDED(FlushFrames(input_image.Timestamp(), input_image.ntp_time_ms_));
   }
 
   if (SUCCEEDED(hr) || hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
