@@ -489,9 +489,17 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
   hr = EnqueueFrame(input_image, missing_frames);
   if (hr == MF_E_NOTACCEPTING) {
     // For robustness (shouldn't happen). Flush any old MF data blocking the
-    // new frame so we don't drop it. (TODO: request key frame here)
+    // new frames.
     m_spDecoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
-    hr = EnqueueFrame(input_image, missing_frames);
+
+    if (input_image._frameType == kVideoFrameKey) {
+      hr = EnqueueFrame(input_image, missing_frames);
+    }
+    else
+    {
+      require_keyframe_ = true;
+      return WEBRTC_VIDEO_CODEC_ERROR;
+    }
   }
 
   if (FAILED(hr))
