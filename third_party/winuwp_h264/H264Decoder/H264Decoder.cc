@@ -180,6 +180,7 @@ int WinUWPH264DecoderImpl::InitDecode(const VideoCodec* codec_settings,
   ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
   ON_SUCCEEDED(m_spDecoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
 
+  inited_ = true;
   return SUCCEEDED(hr) ? WEBRTC_VIDEO_CODEC_OK : WEBRTC_VIDEO_CODEC_ERROR;
 }
 
@@ -275,6 +276,7 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
         return hr;
       }
 
+      // Update members to avoid querying unnecessarily
       width_.emplace(width);
       height_.emplace(height);
     }
@@ -284,7 +286,7 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
 
     if (!buffer.get()) {
         // Pool has too many pending frames.
-        RTC_LOG(LS_WARNING) << "WinUWPH264DecoderImpl::FlushFrames(): Too many frames. Dropping frame.";
+        RTC_LOG(LS_WARNING) << "Decode warning: too many frames. Dropping frame.";
         return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
     }
 
@@ -431,9 +433,16 @@ int WinUWPH264DecoderImpl::Decode(const EncodedImage& input_image,
                                   int64_t render_time_ms) {
   HRESULT hr = S_OK;
 
-  // TODO: add additional precondition checks
+  if (!inited_) {
+    return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  }
+
   if (decodeCompleteCallback_ == NULL) {
     return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
+  }
+
+  if (input_image._buffer == NULL && input_image._length > 0) {
+    return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
   }
 
   // Discard until keyframe.

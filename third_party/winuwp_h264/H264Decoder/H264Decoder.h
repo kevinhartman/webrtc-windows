@@ -57,6 +57,7 @@ class WinUWPH264DecoderImpl : public H264Decoder {
   ComPtr<IMFTransform> m_spDecoder;
   I420BufferPool buffer_pool_;
 
+  bool inited_ = false;
   bool require_keyframe_ = true;
   uint32_t first_frame_rtp_ = 0;
   absl::optional<uint32_t> width_;
