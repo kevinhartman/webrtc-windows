@@ -39,51 +39,8 @@ namespace webrtc {
 //////////////////////////////////////////
 /**
  * Pending work [kevin@hart.mn]
- *   - Add logging using RTC logger.
  *   - Switch to NV12 decode format out. Needed to use HW decoder.
- *   - Use consistent return code handling convention (ON_SUCCEEDED for RTC).
  *   - Use rtc C++ coding style (var naming etc).
- *   - Handle stream format changes.
- *   - This code is not thread-safe (like other decoders such as libvpx). Ensure
- * UWP is respecting that.
- *   X Add "needs key frame" member to discard until key frame.
- *   X Check if auto-create output sample is available to reduce allocations
- *     (property of some MFTs). ==> only works for D3D which we don't use.
- *   X Use I420BufferPool to reduce allocations when constructing out buffers.
- *   X Set CODECAPI_AVLowLatencyMode in case Windows 8 (otherwise it fills all
- *       buffers before emitting decoded frames resulting in huge latency
- *   X Invesitgate varient_true to copy attributes from in to out samples:
- *       https://docs.microsoft.com/en-us/windows/desktop/medfound/basic-mft-processing-model#sample-attributes
- *   X Set MFSampleExtension_Discontinuity on sample when receiving
- * "missing_frames"
- *   X Set props for hw accel:
- * https://docs.microsoft.com/en-us/windows/desktop/medfound/h-264-video-decoder
- *   X Call Release on MFT resources explicitly if needed.
- *   X Is there more optimal ConvertToContiguous buffer even when no 2D buffer
- * available?
- *
- * Stretch
- *   - Looks like D3Dbuffer is fastest medium. Try decoding H264 to D3D buffer
- * and use kNative instead of I420.
- *
- * Rate issue debugging
- *   - Try using RTP time directly for sample time.
- *   - Check auto-duration for frames.
- *   - Check if sample time coming out is based after 0 or is same as input.
- *   - Use WMF trace to see sample time info and look for anything weird.
- *   - Try starting samples at 0. Keep initial frame time in class. Try for RTP
- * and NTP timestamps.
- *   - Try same build on both peers. Try Release mode builds.
- *   - Try getting framerate directly from format change.
- *   - Try sending discontinuity flag on first sample.
- *   - Follow codepath to see if WebRTC is discarding.
- *   - Use critical section at beginning of decode to ensure single access to
- * MFT.
- *   - Try setting render_time on decoded frame to see if there's any impact.
- *   - MFSampleExtension_CleanPoint?
- *   - data.frame_ =
- * std::make_unique<webrtc::VideoFrame>(frame.video_frame_buffer(),
- * frame.rotation(), frame.timestamp()); looks wrong in media source
  */
 
 WinUWPH264DecoderImpl::WinUWPH264DecoderImpl()
@@ -238,6 +195,10 @@ HRESULT GetOutputStatus(ComPtr<IMFTransform> decoder, DWORD* output_status) {
   return hr;
 }
 
+/**
+* Note: expected to return MF_E_TRANSFORM_NEED_MORE_INPUT and 
+*       MF_E_TRANSFORM_STREAM_CHANGE which must be handled by caller.
+*/
 HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
                                            uint64_t ntp_time_ms) {
   HRESULT hr;
@@ -562,20 +523,5 @@ int WinUWPH264DecoderImpl::Release() {
 const char* WinUWPH264DecoderImpl::ImplementationName() const {
   return "H264_MediaFoundation";
 }
-
-// TODO: safe delete this class from project
-// Used to store an encoded H264 sample in a VideoFrame
-class H264NativeHandleBuffer : public NativeHandleBuffer {
- public:
-  H264NativeHandleBuffer(ComPtr<IMFSample> sample, int width, int height)
-      : NativeHandleBuffer(sample.Get(), width, height), _sample(sample) {}
-
-  virtual ~H264NativeHandleBuffer() {}
-
-  rtc::scoped_refptr<I420BufferInterface> ToI420() override { return nullptr; }
-
- private:
-  ComPtr<IMFSample> _sample;
-};
 
 }  // namespace webrtc
