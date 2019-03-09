@@ -257,20 +257,20 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
     ComPtr<IMFMediaBuffer> spOutBuffer;
     ON_SUCCEEDED(MFCreateMemoryBuffer(strmInfo.cbSize, &spOutBuffer));
     if (FAILED(hr)) {
-      RTC_LOG(LS_ERROR) << "Decode failure: memory buffer creation failed.";
+      RTC_LOG(LS_ERROR) << "Decode failure: output image memory buffer creation failed.";
       return hr;
     }
 
     ComPtr<IMFSample> spOutSample;
     ON_SUCCEEDED(MFCreateSample(&spOutSample));
     if (FAILED(hr)) {
-      RTC_LOG(LS_ERROR) << "Decode failure: sample creation failed.";
+      RTC_LOG(LS_ERROR) << "Decode failure: output sample creation failed.";
       return hr;
     }
 
     ON_SUCCEEDED(spOutSample->AddBuffer(spOutBuffer.Get()));
     if (FAILED(hr)) {
-      RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to sample.";
+      RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to output sample.";
       return hr;
     }
 
@@ -385,37 +385,45 @@ HRESULT WinUWPH264DecoderImpl::FlushFrames(uint32_t rtp_timestamp,
  */
 HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
                                             bool missing_frames) {
+  HRESULT hr = S_OK;
+
   // Create a MF buffer from our data
   ComPtr<IMFMediaBuffer> spBuffer;
-  HRESULT hr = MFCreateMemoryBuffer(input_image._length, &spBuffer);
-  if (FAILED(hr))
+  ON_SUCCEEDED(MFCreateMemoryBuffer(input_image._length, &spBuffer));
+  if (FAILED(hr)) {
+    RTC_LOG(LS_ERROR) << "Decode failure: input image memory buffer creation failed.";
     return hr;
+  }
 
   DWORD maxLen, curLen;
   BYTE* pData;
-  hr = spBuffer->Lock(&pData, &maxLen, &curLen);
+  ON_SUCCEEDED(spBuffer->Lock(&pData, &maxLen, &curLen));
   if (FAILED(hr))
     return hr;
 
   memcpy(pData, input_image._buffer, input_image._length);
 
-  hr = spBuffer->Unlock();
+  ON_SUCCEEDED(spBuffer->Unlock());
   if (FAILED(hr))
     return hr;
 
-  hr = spBuffer->SetCurrentLength(input_image._length);
+  ON_SUCCEEDED(spBuffer->SetCurrentLength(input_image._length));
   if (FAILED(hr))
     return hr;
 
   // Create a sample from media buffer
   ComPtr<IMFSample> spSample;
-  hr = MFCreateSample(&spSample);
-  if (FAILED(hr))
+  ON_SUCCEEDED(MFCreateSample(&spSample));
+  if (FAILED(hr)) {
+    RTC_LOG(LS_ERROR) << "Decode failure: input sample creation failed.";
     return hr;
+  }
 
-  hr = spSample->AddBuffer(spBuffer.Get());
-  if (FAILED(hr))
+  ON_SUCCEEDED(spSample->AddBuffer(spBuffer.Get()));
+  if (FAILED(hr)) {
+    RTC_LOG(LS_ERROR) << "Decode failure: failed to add buffer to input sample.";
     return hr;
+  }
 
   int64_t sampleTimeMs;
   if (first_frame_rtp_ == 0) {
@@ -426,27 +434,33 @@ HRESULT WinUWPH264DecoderImpl::EnqueueFrame(const EncodedImage& input_image,
     sampleTimeMs = (static_cast<uint64_t>(input_image.Timestamp()) - first_frame_rtp_) / 90.0 + 0.5f;
   }
 
-  hr = spSample->SetSampleTime(sampleTimeMs * 10000 /* convert milliseconds to 100-nanosecond unit */);
-  if (FAILED(hr))
+  ON_SUCCEEDED(spSample->SetSampleTime(sampleTimeMs * 10000 /* convert milliseconds to 100-nanosecond unit */));
+  if (FAILED(hr)) {
+    RTC_LOG(LS_ERROR) << "Decode failure: failed to set sample time on input sample.";
     return hr;
+  }
 
   // Set sample attributes
   ComPtr<IMFAttributes> sampleAttributes;
-  hr = spSample.As(&sampleAttributes);
+  ON_SUCCEEDED(spSample.As(&sampleAttributes));
 
-  if (FAILED(hr))
-    return hr;
+  if (FAILED(hr)) {
+    RTC_LOG(LS_ERROR) << "Decode warning: failed to set image attributes for frame.";
+    hr = S_OK;
+  } else {
+    if (input_image._frameType == kVideoFrameKey && input_image._completeFrame) {
+      ON_SUCCEEDED(sampleAttributes->SetUINT32(MFSampleExtension_CleanPoint, TRUE));
+      hr = S_OK;
+    }
 
-  if (input_image._frameType == kVideoFrameKey && input_image._completeFrame) {
-    sampleAttributes->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
+    if (missing_frames) {
+      ON_SUCCEEDED(sampleAttributes->SetUINT32(MFSampleExtension_Discontinuity, TRUE));
+      hr = S_OK;
+    }
   }
-
-  if (missing_frames) {
-    sampleAttributes->SetUINT32(MFSampleExtension_Discontinuity, TRUE);
-  }
-
+  
   // Enqueue sample with Media Foundation
-  hr = m_spDecoder->ProcessInput(0, spSample.Get(), 0);
+  ON_SUCCEEDED(m_spDecoder->ProcessInput(0, spSample.Get(), 0));
   return hr;
 }
 
